@@ -39,6 +39,9 @@ from transformers import (
     BertConfig,
     BertForQuestionAnswering,
     BertTokenizer,
+    CamembertConfig,
+    CamembertForQuestionAnswering,
+    CamembertTokenizer,
     DistilBertConfig,
     DistilBertForQuestionAnswering,
     DistilBertTokenizer,
@@ -74,64 +77,25 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 ALL_MODELS = sum(
-    (tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, RobertaConfig, XLNetConfig, XLMConfig)),
+    (
+        tuple(conf.pretrained_config_archive_map.keys())
+        for conf in (BertConfig, CamembertConfig, RobertaConfig, XLNetConfig, XLMConfig)
+    ),
     (),
 )
 
-
-#-------------------------------------------------------------
-
-# class bert_japanese_config(BertConfig):
-#   def __init__(self,attention_probs_dropout_prob, hidden_act,hidden_dropout_prob,hidden_size,initializer_range,intermediate_size,max_position_embeddings,num_attention_heads,num_hidden_layers,type_vocab_size,vocab_size):
-#     super(bert_japanese_config).__init__()
-#     output_attentions : False
-# output_hidden_states : False
-# output_past : True
-# torchscript : False
-# use_bfloat16 : False
-# pruned_heads : {}
-# is_decoder : False
-# max_length : 20
-# do_sample : False
-# num_beams : 1
-# temperature : 1.0
-# top_k : 50
-# top_p : 1.0
-# repetition_penalty : 1.0
-# bos_token_id : 0
-# pad_token_id : 0
-# eos_token_ids : 0
-# length_penalty : 1.0
-# num_return_sequences : 1
-# finetuning_task : None
-# num_labels : 2
-# id2label : {0: 'LABEL_0', 1: 'LABEL_1'}
-# label2id : {'LABEL_0': 0, 'LABEL_1': 1}
-
-#     self.attention_probs_dropout_prob = 0.1
-#     self.hidden_act = "gelu"
-#     self.hidden_dropout_prob = 0.1
-#     self.hidden_size = 768
-#     self.initializer_range = 0.02
-#     self.intermediate_size = 3072
-#     self.max_position_embeddings = 512
-#     self.num_attention_heads = 12
-#     self.num_hidden_layers = 12
-#     self.type_vocab_size = 2
-#     self.vocab_size = 32000
-#     self.layer_norm_eps = 1e-12
-    
-    
-#--------------------------------------------------------------
-
 MODEL_CLASSES = {
     "bert": (BertConfig, BertForQuestionAnswering, BertTokenizer),
+    "camembert": (CamembertConfig, CamembertForQuestionAnswering, CamembertTokenizer),
     "roberta": (RobertaConfig, RobertaForQuestionAnswering, RobertaTokenizer),
     "xlnet": (XLNetConfig, XLNetForQuestionAnswering, XLNetTokenizer),
     "xlm": (XLMConfig, XLMForQuestionAnswering, XLMTokenizer),
     "distilbert": (DistilBertConfig, DistilBertForQuestionAnswering, DistilBertTokenizer),
     "albert": (AlbertConfig, AlbertForQuestionAnswering, AlbertTokenizer),
-    "bert-japanese": (AutoConfig.from_pretrained("bert-base-japanese-whole-word-masking"), BertForQuestionAnswering.from_pretrained("bert-base-japanese-whole-word-masking"), AutoTokenizer.from_pretrained("bert-base-japanese-whole-word-masking")),
+    "bert-base-japanese-whole-word-masking": (AutoConfig.from_pretrained("bert-base-japanese-whole-word-masking"), BertForQuestionAnswering.from_pretrained("bert-base-japanese-whole-word-masking"), AutoTokenizer.from_pretrained("bert-base-japanese-whole-word-masking")),
+    "bert-base-japanese": (AutoConfig.from_pretrained("bert-base-japanese"), BertForQuestionAnswering.from_pretrained("bert-base-japanese"), AutoTokenizer.from_pretrained("bert-base-japanese")),
+    "bert-base-japanese-char": (AutoConfig.from_pretrained("bert-base-japanese-char"), BertForQuestionAnswering.from_pretrained("bert-base-japanese-char"), AutoTokenizer.from_pretrained("bert-base-japanese-char")),
+    "bert-base-japanese-char-whole-word-masking": (AutoConfig.from_pretrained("bert-base-japanese-char-whole-word-masking"), BertForQuestionAnswering.from_pretrained("bert-base-japanese-char-whole-word-masking"), AutoTokenizer.from_pretrained("bert-base-japanese-char-whole-word-masking")),
 }
 
 
@@ -263,13 +227,18 @@ def train(args, train_dataset, model, tokenizer):
                 "end_positions": batch[4],
             }
 
-            if args.model_type in ["xlm", "roberta", "distilbert"]:
+            if args.model_type in ["xlm", "roberta", "distilbert", "camembert"]:
                 del inputs["token_type_ids"]
 
             if args.model_type in ["xlnet", "xlm"]:
                 inputs.update({"cls_index": batch[5], "p_mask": batch[6]})
                 if args.version_2_with_negative:
                     inputs.update({"is_impossible": batch[7]})
+                if hasattr(model, "config") and hasattr(model.config, "lang2id"):
+                    inputs.update(
+                        {"langs": (torch.ones(batch[0].shape, dtype=torch.int64) * args.lang_id).to(args.device)}
+                    )
+
             outputs = model(**inputs)
             # model outputs are always tuple in transformers (see doc)
             loss = outputs[0]
@@ -373,7 +342,7 @@ def evaluate(args, model, tokenizer, prefix=""):
                 "token_type_ids": batch[2],
             }
 
-            if args.model_type in ["xlm", "roberta", "distilbert"]:
+            if args.model_type in ["xlm", "roberta", "distilbert", "camembert"]:
                 del inputs["token_type_ids"]
 
             example_indices = batch[3]
@@ -381,6 +350,11 @@ def evaluate(args, model, tokenizer, prefix=""):
             # XLNet and XLM use more arguments for their predictions
             if args.model_type in ["xlnet", "xlm"]:
                 inputs.update({"cls_index": batch[4], "p_mask": batch[5]})
+                # for lang_id-sensitive xlm models
+                if hasattr(model, "config") and hasattr(model.config, "lang2id"):
+                    inputs.update(
+                        {"langs": (torch.ones(batch[0].shape, dtype=torch.int64) * args.lang_id).to(args.device)}
+                    )
 
             outputs = model(**inputs)
 
@@ -686,9 +660,15 @@ def main():
         help="If true, all of the warnings related to data processing will be printed. "
         "A number of warnings are expected for a normal SQuAD evaluation.",
     )
+    parser.add_argument(
+        "--lang_id",
+        default=0,
+        type=int,
+        help="language id of input for language-specific xlm models (see tokenization_xlm.PRETRAINED_INIT_CONFIGURATION)",
+    )
 
-    parser.add_argument("--logging_steps", type=int, default=50, help="Log every X updates steps.")
-    parser.add_argument("--save_steps", type=int, default=50, help="Save checkpoint every X updates steps.")
+    parser.add_argument("--logging_steps", type=int, default=500, help="Log every X updates steps.")
+    parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X updates steps.")
     parser.add_argument(
         "--eval_all_checkpoints",
         action="store_true",
@@ -753,7 +733,7 @@ def main():
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        args.n_gpu = torch.cuda.device_count()
+        args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
